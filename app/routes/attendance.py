@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 
@@ -19,6 +19,7 @@ from app.schemas.schemas import SessionStart, SessionStop, AttendanceMark
 from app.middleware.auth import get_current_admin
 from app.services.email_service import send_absence_notification
 from app.services.excel_service import generate_attendance_excel
+from app.services.face_service import get_face_encoding, compare_face_to_known, FaceRecognitionError
 from app.config.database import get_db
 
 router = APIRouter(prefix="/api/attendance", tags=["Attendance"])
@@ -30,6 +31,103 @@ def _today() -> str:
 
 def _now_time() -> str:
     return datetime.utcnow().strftime("%H:%M:%S")
+
+@router.post("/mark-ai", status_code=201)
+async def mark_attendance_ai(
+    subject_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """Mark attendance using an uploaded face image."""
+    
+    # 1. Validate subject
+    res_subj = await db.execute(select(Subject).filter(Subject.id == subject_id))
+    subject = res_subj.scalar_one_or_none()
+    if not subject:
+        raise HTTPException(status_code=404, detail="Subject not found.")
+
+    # 2. Check active session
+    res_session = await db.execute(
+        select(AttendanceSession).filter(
+            and_(
+                AttendanceSession.subject_id == subject_id,
+                AttendanceSession.date == _today(),
+                AttendanceSession.active == True,
+            )
+        )
+    )
+    active_session = res_session.scalar_one_or_none()
+    if not active_session:
+        raise HTTPException(
+            status_code=400,
+            detail="No active attendance session for this subject today. Start a session first.",
+        )
+
+    # 3. Extract face encoding from upload
+    try:
+        image_bytes = await file.read()
+        unknown_encoding_json = get_face_encoding(image_bytes)
+    except FaceRecognitionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error processing image.")
+
+    # 4. Fetch all students to compare
+    res_students = await db.execute(select(Student).filter(Student.is_active == True))
+    students = res_students.scalars().all()
+    
+    known_dict = {s.id: s.face_encoding for s in students if s.face_encoding}
+    
+    # 5. Compare faces
+    matched_student_id, confidence = compare_face_to_known(unknown_encoding_json, known_dict)
+    
+    if not matched_student_id:
+        raise HTTPException(status_code=404, detail="Face not recognized or no matches found.")
+        
+    student = next((s for s in students if s.id == matched_student_id), None)
+
+    # 6. Duplicate check
+    res_att = await db.execute(
+        select(Attendance).filter(
+            and_(
+                Attendance.student_id == matched_student_id,
+                Attendance.subject_id == subject_id,
+                Attendance.date == _today(),
+            )
+        )
+    )
+    existing = res_att.scalar_one_or_none()
+    if existing:
+        return {
+            "success": True, 
+            "message": f"Recognized {student.name}, but attendance already marked."
+        }
+
+    # 7. Create record
+    attendance = Attendance(
+        student_id=matched_student_id,
+        subject_id=subject_id,
+        session_id=active_session.id,
+        date=_today(),
+        time=_now_time(),
+        status="present",
+        confidence_score=confidence,
+        marked_by="ai",
+    )
+    db.add(attendance)
+    await db.commit()
+    await db.refresh(attendance)
+
+    return {
+        "success": True,
+        "message": f"AI Attendance marked as present for {student.name}.",
+        "data": {
+            "id": attendance.id,
+            "student_id": attendance.student_id,
+            "confidence_score": attendance.confidence_score,
+            "marked_by": attendance.marked_by,
+        },
+    }
 
 
 # ──────────────────────────────────────

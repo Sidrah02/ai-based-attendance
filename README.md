@@ -70,10 +70,16 @@ Edit `.env`:
 | `SMTP_USER` / `SMTP_PASS` | Email credentials |
 | `EMAIL_FROM` | Sender email |
 
-### 3. Start PostgreSQL
+### 3. Start PostgreSQL Database
 
-Ensure PostgreSQL is running locally and the database `attendance_db` is created.
-Alternatively, use a managed cloud Postgres database (like Supabase, RDS, etc) and set `DATABASE_URL`.
+We provide a `docker-compose.yml` to easily start a local PostgreSQL instance:
+```bash
+docker-compose up -d
+```
+Once the database is running, initialize the schema using Alembic:
+```bash
+alembic upgrade head
+```
 
 ### 4. Run the Server
 
@@ -104,6 +110,7 @@ The database tables are automatically created on startup.
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
 | POST | `/api/students/add` | 🔒 | Add student |
+| POST | `/api/students/{id}/face` | 🔒 | Upload & register a student's face for AI |
 | GET | `/api/students` | 🔒 | List (paginated, searchable) |
 | GET | `/api/students/{id}` | 🔒 | Get by ID |
 
@@ -148,19 +155,26 @@ The database tables are automatically created on startup.
 
 ---
 
-## 🤖 AI Integration (Future)
+## 🤖 AI Face Recognition API
 
-```python
-import requests
+The system uses **DeepFace** (VGG-Face) and **OpenCV** to automatically extract and match facial embeddings.
 
-requests.post("http://localhost:8000/api/attendance/mark", json={
-    "student_id": 1,
-    "subject_id": 2,
-    "status": "present",
-    "confidence_score": 0.97,
-    "marked_by": "ai"
-})
+### 1. Register a Student's Face
+Use an API testing tool (like Postman or cURL) to upload a clear image of the student:
+```bash
+curl -X POST "http://localhost:8000/api/students/1/face" \
+  -H "Authorization: Bearer <your_jwt_token>" \
+  -F "file=@student_photo.jpg"
 ```
+
+### 2. Automated AI Attendance (`/mark-ai`)
+This endpoint accepts a photo (e.g., from a classroom camera) and automatically finds the matching student and marks them present.
+```bash
+curl -X POST "http://localhost:8000/api/attendance/mark-ai" \
+  -F "subject_id=2" \
+  -F "file=@group_or_single_photo.jpg"
+```
+It returns the matched student and the AI confidence score.
 
 ---
 

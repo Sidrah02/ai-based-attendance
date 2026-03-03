@@ -16,6 +16,7 @@ class Student(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password = Column(String, nullable=False)  # hashed
     parent_email = Column(String, nullable=False)
+    face_encoding = Column(String, nullable=True)  # Store JSON representation of face embedding
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

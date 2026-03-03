@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from typing import Optional
 from app.models.student import Student
 from app.models.admin import Admin
@@ -8,8 +8,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import or_, func
 from app.config.database import get_db
+from app.services.face_service import get_face_encoding, FaceRecognitionError
 
 router = APIRouter(prefix="/api/students", tags=["Students"])
+
+@router.post("/{student_id}/face")
+async def register_student_face(
+    student_id: int, 
+    file: UploadFile = File(...), 
+    admin: Admin = Depends(get_current_admin), 
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(Student).filter(Student.id == student_id))
+    student = result.scalar_one_or_none()
+    
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    try:
+        image_bytes = await file.read()
+        encoding_json = get_face_encoding(image_bytes)
+        
+        student.face_encoding = encoding_json
+        await db.commit()
+        await db.refresh(student)
+        
+        return {"success": True, "message": "Face registered successfully."}
+    except FaceRecognitionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error while processing face.")
 
 
 @router.post("/add", status_code=201)
